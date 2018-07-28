@@ -11,6 +11,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System;
+using System.Reflection;
 
 namespace Arch.IS4Host
 {
@@ -27,8 +28,10 @@ namespace Arch.IS4Host
 
         public void ConfigureServices(IServiceCollection services)
         {
+            // 默认用的 sqlitedb，换为 PostgreSQL DB; connectionstring 在 appsettings.json 文件中配置
+            var connectionString = Configuration.GetConnectionString("DefaultConnection");
             services.AddDbContext<ApplicationDbContext>(options =>
-                options.UseSqlite(Configuration.GetConnectionString("DefaultConnection")));
+                options.UseNpgsql(connectionString));
 
             services.AddIdentity<ApplicationUser, IdentityRole>()
                 .AddEntityFrameworkStores<ApplicationDbContext>()
@@ -42,6 +45,8 @@ namespace Arch.IS4Host
                 iis.AutomaticAuthentication = false;
             });
 
+            // 获取当前 Assembly; GetTypeInfo 是扩展方法，需要引用命名空间[System.Reflection]
+            var migrationAssembly = typeof(Startup).GetTypeInfo().Assembly.GetName().Name;
             var builder = services.AddIdentityServer(options =>
             {
                 options.Events.RaiseErrorEvents = true;
@@ -49,9 +54,17 @@ namespace Arch.IS4Host
                 options.Events.RaiseFailureEvents = true;
                 options.Events.RaiseSuccessEvents = true;
             })
-                .AddInMemoryIdentityResources(Config.GetIdentityResources())
-                .AddInMemoryApiResources(Config.GetApis())
-                .AddInMemoryClients(Config.GetClients())
+                // 从内存数据库改为配置的 PostgreSQL => 存储 Configuratioin Data
+                .AddConfigurationStore(configDb=>{
+                    configDb.ConfigureDbContext = db => db.UseNpgsql(connectionString,
+                    sql => sql.MigrationsAssembly(migrationAssembly));
+                })
+                // 使用 PostgreSQL db 存储 Operational Data
+                .AddConfigurationStore(operationalDb =>
+                {
+                    operationalDb.ConfigureDbContext = db => db.UseNpgsql(connectionString,
+                        sql => sql.MigrationsAssembly(migrationAssembly));
+                })
                 .AddAspNetIdentity<ApplicationUser>();
 
             if (Environment.IsDevelopment())
@@ -60,6 +73,7 @@ namespace Arch.IS4Host
             }
             else
             {
+                // Producttion Env needs to configure a key, discuss later
                 throw new Exception("need to configure key material");
             }
 
